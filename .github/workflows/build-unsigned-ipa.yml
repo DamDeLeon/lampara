@@ -1,0 +1,64 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prebuild native iOS project
+        run: npx expo prebuild --platform ios
+
+      - name: Install CocoaPods dependencies
+        run: cd ios && pod install
+
+      - name: Locate workspace and scheme
+        id: locate
+        run: |
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | awk '/Schemes:/{flag=1; next} flag && NF{print; exit}' | xargs)
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Workspace: $WORKSPACE"
+          echo "Scheme: $SCHEME"
+
+      - name: Archive without code signing
+        run: |
+          xcodebuild archive \
+            -workspace "${{ steps.locate.outputs.workspace }}" \
+            -scheme "${{ steps.locate.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath build/Lampara.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package unsigned .ipa
+        run: |
+          APP_PATH=$(find build/Lampara.xcarchive/Products/Applications -maxdepth 1 -name "*.app" | head -n 1)
+          echo "App bundle: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r lampara-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lampara-unsigned-ipa
+          path: lampara-unsigned.ipa
+          retention-days: 14
